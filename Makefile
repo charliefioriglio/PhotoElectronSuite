@@ -28,8 +28,9 @@ LIB_OBJECTS = $(patsubst code/cxx/%.cpp,$(BUILD_DIR)/%.o,$(LIB_SOURCES))
 
 DYSON_OBJECT = $(BUILD_DIR)/dyson_gen.o
 BETA_OBJECT = $(BUILD_DIR)/beta_gen.o
+INTEGRAL_OBJECT = $(BUILD_DIR)/dipole_integrals.o
 
-EXECUTABLES = dyson_gen beta_gen
+EXECUTABLES = dyson_gen beta_gen dipole_integrals
 
 all: $(EXECUTABLES)
 
@@ -37,6 +38,9 @@ dyson_gen: $(DYSON_OBJECT) $(LIB_OBJECTS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 beta_gen: $(BETA_OBJECT) $(LIB_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+dipole_integrals: $(INTEGRAL_OBJECT) $(LIB_OBJECTS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD_DIR)/%.o: code/cxx/%.cpp

@@ -89,8 +89,8 @@ std::vector<BetaResult> BetaCalculator::CalculateBeta(
         for (int i = 0; i < int(angle_grid.points.size()); ++i) {
             const auto& orient = angle_grid.points[i];
             RotationMatrix R;
-            // Match ezDyson convention
-            R.SetFromEuler(0.0, orient.beta, orient.alpha);
+            // Use the same symmetric Euler convention as point-dipole numeric averaging
+            R.SetFromEuler(orient.alpha, orient.beta, orient.alpha);
             RotationMatrix RT = R.Transpose();
             
             double pol_mol[3] = {pol_lab[0], pol_lab[1], pol_lab[2]};
@@ -701,7 +701,8 @@ std::vector<BetaResult> BetaCalculator::CalculateBetaPWENumeric(
         for(int i=0; i<int(angle_grid.points.size()); ++i) {
             const auto& orient = angle_grid.points[i];
             RotationMatrix R;
-            R.SetFromEuler(0.0, orient.beta, orient.alpha);
+            // alpha beta alpha was necessary to get accurate results
+            R.SetFromEuler(orient.alpha, orient.beta, orient.alpha);
             RotationMatrix RT = R.Transpose(); // Lab to Body
             
             // Lab Polarization in Body Frame
@@ -1051,6 +1052,17 @@ std::vector<BetaResult> BetaCalculator::CalculateBetaPointDipoleNumeric(
 #include "physical_dipole.h"
 #include <map>
 
+static std::vector<std::vector<std::complex<double>>> ComputePhysicalDipoleAnalyticME(
+    const std::vector<double>& dyson_vals,
+    const UniformGrid& grid,
+    double eKE_au,
+    double dipole_strength,
+    double dipole_length,
+    const std::vector<double>& dipole_axis,
+    const std::vector<double>& dipole_center,
+    int l_max
+);
+
 std::vector<BetaResult> BetaCalculator::CalculateBetaPhysicalDipole(
     const Dyson& dyson_L,
     const Dyson& dyson_R,
@@ -1064,19 +1076,47 @@ std::vector<BetaResult> BetaCalculator::CalculateBetaPhysicalDipole(
     int l_max
 ) {
     const double HARTREE_EV = 27.211386;
-    const double EV_TO_HARTREE = 1.0 / HARTREE_EV;
     std::vector<BetaResult> results;
-    
-    // 1. Calculate Body-Frame Matrix Elements
-    // Pass eKE as Photon Energies with IE=0
-    
-    // Note: ComputePhysicalDipoleMatrixElements expects vectors of matrix elements per energy
-    auto all_matrix_elements = CrossSectionCalculator::ComputePhysicalDipoleMatrixElements(
-        dyson_L, dyson_R, grid, photoelectron_energies_ev, 0.0, l_max, 
-        dipole_strength, dipole_length, dipole_axis, dipole_center
-    );
-    
-    PhysicalDipole phys(dipole_length, 0.5 * dipole_strength);
+
+    // Build body-frame Y_lm matrix elements with the exact same convention as
+    // the analytic physical-dipole path. Numeric averaging then differs only by
+    // orientation quadrature (not by angular normalization/phase conventions).
+    std::vector<double> phi_L_vals(grid.nx * grid.ny * grid.nz);
+    std::vector<double> phi_R_vals(grid.nx * grid.ny * grid.nz);
+    #pragma omp parallel for collapse(3)
+    for (int ix = 0; ix < grid.nx; ++ix) {
+        for (int iy = 0; iy < grid.ny; ++iy) {
+            for (int iz = 0; iz < grid.nz; ++iz) {
+                int idx = ix * (grid.ny * grid.nz) + iy * grid.nz + iz;
+                double x = grid.xmin + ix * grid.dx;
+                double y = grid.ymin + iy * grid.dy;
+                double z = grid.zmin + iz * grid.dz;
+                phi_L_vals[idx] = dyson_L.evaluate(x, y, z);
+                phi_R_vals[idx] = dyson_R.evaluate(x, y, z);
+            }
+        }
+    }
+
+    std::vector<std::vector<std::vector<std::complex<double>>>> matrices_L;
+    std::vector<std::vector<std::vector<std::complex<double>>>> matrices_R;
+    for (double E_eV : photoelectron_energies_ev) {
+        double eKE_au = E_eV / HARTREE_EV;
+        if (eKE_au <= 0) {
+            int num_lm = (l_max + 1) * (l_max + 1);
+            matrices_L.push_back(std::vector<std::vector<std::complex<double>>>(
+                num_lm, std::vector<std::complex<double>>(3, 0.0)));
+            matrices_R.push_back(std::vector<std::vector<std::complex<double>>>(
+                num_lm, std::vector<std::complex<double>>(3, 0.0)));
+            continue;
+        }
+
+        matrices_L.push_back(ComputePhysicalDipoleAnalyticME(
+            phi_L_vals, grid, eKE_au, dipole_strength, dipole_length,
+            dipole_axis, dipole_center, l_max));
+        matrices_R.push_back(ComputePhysicalDipoleAnalyticME(
+            phi_R_vals, grid, eKE_au, dipole_strength, dipole_length,
+            dipole_axis, dipole_center, l_max));
+    }
     
     double pol_lab[3] = {0.0, 0.0, 1.0};      
     double k_par_lab[3] = {0.0, 0.0, 1.0};    
@@ -1089,14 +1129,9 @@ std::vector<BetaResult> BetaCalculator::CalculateBetaPhysicalDipole(
             results.push_back({eKE, 0.0, 0.0, 0.0});
             continue;
         }
-        
-        // Re-solve angular part to get shapes (Eigenvectors needed for EvaluateAngular)
-        std::map<int, PhysicalDipole::Solution> solutions;
-        for(int m=-l_max; m<=l_max; ++m) {
-            solutions[m] = phys.Solve(eKE * EV_TO_HARTREE, m, l_max);
-        }
-        
-        const auto& elements = all_matrix_elements[ie];
+
+        const auto& C_L = matrices_L[ie];
+        const auto& C_R = matrices_R[ie];
         
         double sum_sigma_par = 0.0;
         double sum_sigma_perp = 0.0;
@@ -1106,61 +1141,57 @@ std::vector<BetaResult> BetaCalculator::CalculateBetaPhysicalDipole(
         for(int i=0; i<int(angle_grid.points.size()); ++i) {
             const auto& orient = angle_grid.points[i];
             RotationMatrix R;
-            // alpha beta alpha was necessary to get accurate results
+            // Match point-dipole numeric orientation convention
             R.SetFromEuler(orient.alpha, orient.beta, orient.alpha);
             RotationMatrix RT = R.Transpose(); // Lab to Body
             
             // Lab Polarization in Body Frame
             double eps_body[3] = {pol_lab[0], pol_lab[1], pol_lab[2]};
             RT.Apply(eps_body[0], eps_body[1], eps_body[2]);
+
+            // Cartesian -> spherical polarization components
+            std::complex<double> e_m1 = (eps_body[0] - std::complex<double>(0,1)*eps_body[1]) / std::sqrt(2.0);
+            std::complex<double> e_0  = eps_body[2];
+            std::complex<double> e_1  = -(eps_body[0] + std::complex<double>(0,1)*eps_body[1]) / std::sqrt(2.0);
             
-            // Helper to compute Amplitude for a given k direction (Lab)
-            auto ComputeAmp = [&](const double* k_lab) -> std::complex<double> {
+            // Helper to compute amplitude from Y_lm matrix elements for a given k direction
+            auto ComputeAmp = [&](const double* k_lab, const std::vector<std::vector<std::complex<double>>>& C) -> std::complex<double> {
                 double k_body[3] = {k_lab[0], k_lab[1], k_lab[2]};
                 RT.Apply(k_body[0], k_body[1], k_body[2]);
                 
-                // Theta, Phi of k_body
                 double r = std::sqrt(k_body[0]*k_body[0] + k_body[1]*k_body[1] + k_body[2]*k_body[2]); 
                 if (r < 1e-12) return 0.0;
                 
                 double theta_k = std::acos(k_body[2]/r);
                 double phi_k = std::atan2(k_body[1], k_body[0]);
-                double eta_k = std::cos(theta_k);
                 
                 std::complex<double> total_amp = 0.0;
-                
-                // Sum over mn
-                for(const auto& elem : elements) {
-                    // Check if solution exists
-                    if (solutions.find(elem.m) == solutions.end()) continue;
-                    const auto& sol = solutions[elem.m];
-                    
-                    // Evaluate Angular S_{mn}(k)
-                    double S_val = phys.EvaluateAngular(eta_k, elem.m, elem.n_mode, sol);
-                    
-                    // Azimuthal Phase exp(-i m phi_k) / sqrt(2pi)
-                    std::complex<double> phi_val = std::exp(std::complex<double>(0, -elem.m * phi_k));
-                    phi_val /= std::sqrt(2.0 * M_PI);
-                    
-                    // Radial Phase (-i)^nu = exp(-i pi/2 nu)
-                    std::complex<double> nu = elem.nu;
-                    std::complex<double> phase = std::pow(std::complex<double>(0.0, -1.0), nu);
-                    
-                    // Matrix Element dot Polarization
-                    std::complex<double> I_dot_eps = elem.I_x * eps_body[0] + elem.I_y * eps_body[1] + elem.I_z * eps_body[2];
-                    
-                    // Combine
-                    total_amp += I_dot_eps * S_val * phi_val * phase;
+
+                int idx_lm = 0;
+                for (int l = 0; l <= l_max; ++l) {
+                    for (int m = -l; m <= l; ++m) {
+                        std::complex<double> Ylm = MathSpecial::SphericalHarmonicY(l, m, theta_k, phi_k);
+                        std::complex<double> term = C[idx_lm][0] * e_m1 + C[idx_lm][1] * e_0 + C[idx_lm][2] * e_1;
+                        total_amp += term * Ylm;
+                        idx_lm++;
+                    }
                 }
+
                 return total_amp;
             };
             
-            std::complex<double> A_par = ComputeAmp(k_par_lab);
-            double sig_par = std::norm(A_par);
+            std::complex<double> A_par_L = ComputeAmp(k_par_lab, C_L);
+            std::complex<double> A_par_R = ComputeAmp(k_par_lab, C_R);
+            double sig_par = std::real(A_par_L * std::conj(A_par_R));
             
-            std::complex<double> A_perp1 = ComputeAmp(k_perp1_lab);
-            std::complex<double> A_perp2 = ComputeAmp(k_perp2_lab);
-            double sig_perp = 0.5 * (std::norm(A_perp1) + std::norm(A_perp2));
+            std::complex<double> A_perp1_L = ComputeAmp(k_perp1_lab, C_L);
+            std::complex<double> A_perp1_R = ComputeAmp(k_perp1_lab, C_R);
+            std::complex<double> A_perp2_L = ComputeAmp(k_perp2_lab, C_L);
+            std::complex<double> A_perp2_R = ComputeAmp(k_perp2_lab, C_R);
+            double sig_perp = 0.5 * (
+                std::real(A_perp1_L * std::conj(A_perp1_R)) +
+                std::real(A_perp2_L * std::conj(A_perp2_R))
+            );
             
             sum_sigma_par += sig_par * orient.weight;
             sum_sigma_perp += sig_perp * orient.weight;

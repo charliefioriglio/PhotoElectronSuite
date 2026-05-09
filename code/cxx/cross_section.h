@@ -75,9 +75,12 @@ public:
         int m;
         int n_mode;
         std::complex<double> nu;
-        std::complex<double> I_x;
-        std::complex<double> I_y;
-        std::complex<double> I_z;
+        std::complex<double> I_x_L;
+        std::complex<double> I_y_L;
+        std::complex<double> I_z_L;
+        std::complex<double> I_x_R;
+        std::complex<double> I_y_R;
+        std::complex<double> I_z_R;
     };
     
     static std::vector<std::vector<DipoleMatrixElement>> ComputePhysicalDipoleMatrixElements(

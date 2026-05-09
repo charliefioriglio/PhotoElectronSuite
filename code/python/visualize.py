@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from skimage import measure
 import argparse
+import json
+import os
 
 def read_binary_grid(filename):
     with open(filename, "rb") as f:
@@ -39,7 +41,7 @@ def plot_slice(data, axis, index, title, save_file=None):
     else:
         plt.show()
 
-def plot_isosurface(data, spacing, origin, isovalue=0.02, save_file=None):
+def plot_isosurface(data, spacing, origin, isovalue=0.02, save_file=None, atoms=None):
     # Data is (nx, ny, nz)
     # Origin is (x0, y0, z0)
     # Spacing is (dx, dy, dz)
@@ -74,6 +76,16 @@ def plot_isosurface(data, spacing, origin, isovalue=0.02, save_file=None):
     ax.set_xlabel("X (Bohr)")
     ax.set_ylabel("Y (Bohr)")
     ax.set_zlabel("Z (Bohr)")
+    
+    # Plot atoms if provided
+    if atoms:
+        for atom in atoms:
+            x, y, z = atom["x"], atom["y"], atom["z"]
+            symbol = atom["symbol"]
+            # Draw a small sphere or just a point
+            ax.scatter([x], [y], [z], color='black', s=50)
+            ax.text(x, y, z, symbol, color='black', fontsize=12, fontweight='bold')
+
     ax.set_title(f"Dyson Orbital Isosurface (+/- {isovalue})")
     
     if save_file:
@@ -90,8 +102,20 @@ if __name__ == "__main__":
     parser.add_argument("--index", type=int, default=-1, help="Slice index (default: middle)")
     parser.add_argument("--isovalue", type=float, default=0.02, help="Isosurface value (default: 0.02)")
     parser.add_argument("--save", type=str, help="Save plot to file instead of showing")
+    parser.add_argument("--atoms", type=str, help="JSON file containing atom positions and symbols")
     
     args = parser.parse_args()
+    
+    atoms_data = None
+    if args.atoms:
+        if os.path.exists(args.atoms):
+            with open(args.atoms, "r") as f:
+                atoms_data = json.load(f)
+        else:
+            try:
+                atoms_data = json.loads(args.atoms)
+            except:
+                print(f"Warning: Could not parse atoms data: {args.atoms}")
     
     print(f"Reading {args.file}...")
     data, dims, origin, spacing = read_binary_grid(args.file)
@@ -104,7 +128,7 @@ if __name__ == "__main__":
     else:
         print(f"Generating 3D isosurface at +/- {args.isovalue}...")
         try:
-            plot_isosurface(data, spacing, origin, args.isovalue, args.save)
+            plot_isosurface(data, spacing, origin, args.isovalue, args.save, atoms_data)
         except Exception as e:
             print(f"Error plotting isosurface: {e}")
             print("Try adjusting the isovalue or grid step.")

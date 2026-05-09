@@ -821,9 +821,6 @@ std::vector<std::vector<CrossSectionCalculator::DipoleMatrixElement>> CrossSecti
                              double y = y0 + iy * step;
                              double z = z0 + iz * step;
                              
-                             // Global indices for dipole operator r
-                             double dip[3] = {x, y, z}; 
-                             
                              // Local coords for wavefunction
                              double xs = x - dipole_center[0];
                              double ys = y - dipole_center[1];
@@ -831,6 +828,10 @@ std::vector<std::vector<CrossSectionCalculator::DipoleMatrixElement>> CrossSecti
                              double x_loc = R_mat[0][0]*xs + R_mat[0][1]*ys + R_mat[0][2]*zs;
                              double y_loc = R_mat[1][0]*xs + R_mat[1][1]*ys + R_mat[1][2]*zs;
                              double z_loc = R_mat[2][0]*xs + R_mat[2][1]*ys + R_mat[2][2]*zs;
+
+                             // Dipole operator components must be in the same body frame used
+                             // for the physical-dipole continuum and polarization vectors.
+                             double dip[3] = {x_loc, y_loc, z_loc};
                              
                              std::complex<double> Psi = phys.EvaluateMode(x_loc, y_loc, z_loc, m, n, sol);
                              std::complex<double> Psi_conj = std::conj(Psi);
@@ -849,11 +850,11 @@ std::vector<std::vector<CrossSectionCalculator::DipoleMatrixElement>> CrossSecti
                     }
                 }
                 
-                std::complex<double> I_avg[3];
+                std::complex<double> I_L[3];
+                std::complex<double> I_R[3];
                 for(int a=0; a<3; ++a) {
-                    std::complex<double> vL(IL_real[a], IL_imag[a]);
-                    std::complex<double> vR(IR_real[a], IR_imag[a]);
-                    I_avg[a] = 0.5 * (vL + vR);
+                    I_L[a] = std::complex<double>(IL_real[a], IL_imag[a]);
+                    I_R[a] = std::complex<double>(IR_real[a], IR_imag[a]);
                 }
                 
                 DipoleMatrixElement elem;
@@ -865,9 +866,12 @@ std::vector<std::vector<CrossSectionCalculator::DipoleMatrixElement>> CrossSecti
                 } else {
                     elem.nu = 0.0;
                 }
-                elem.I_x = I_avg[0];
-                elem.I_y = I_avg[1];
-                elem.I_z = I_avg[2];
+                elem.I_x_L = I_L[0];
+                elem.I_y_L = I_L[1];
+                elem.I_z_L = I_L[2];
+                elem.I_x_R = I_R[0];
+                elem.I_y_R = I_R[1];
+                elem.I_z_R = I_R[2];
                 
                 current_energy_elements.push_back(elem);
             }

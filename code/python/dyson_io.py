@@ -100,9 +100,12 @@ def parse_shell(shell_lines, symbol, center_bohr, is_pure):
     return ShellSpec(l, np.array(exps), np.array(coeffs), is_pure, symbol)
 
 def parse_basis(basis_lines, atoms, pure_map):
-    geom_iter = iter(atoms)
-    current_atom = None
+    # In Q-Chem general basis format, blocks are per element symbol, not per atom.
+    # Build a symbol -> shells template map first, then replicate shells to all atoms
+    # with the matching symbol.
+    current_symbol = None
     cursor = 0
+    symbol_shells = {}
     
     while cursor < len(basis_lines):
         line = basis_lines[cursor].strip()
@@ -117,15 +120,14 @@ def parse_basis(basis_lines, atoms, pure_map):
             
         tokens = line.split()
         if len(tokens) == 2 and tokens[1].isdigit() and tokens[0].isalpha():
-            # Atom header
-            try:
-                current_atom = next(geom_iter)
-            except StopIteration:
-                break
+            # Element header, e.g. "Ag 0" or "F 0"
+            current_symbol = tokens[0]
+            if current_symbol not in symbol_shells:
+                symbol_shells[current_symbol] = []
             cursor += 1
             continue
             
-        if current_atom is None:
+        if current_symbol is None:
             cursor += 1
             continue
             
@@ -137,12 +139,28 @@ def parse_basis(basis_lines, atoms, pure_map):
             
             l = ANGULAR_LETTER_TO_L[tokens[0].upper()]
             is_pure = pure_map.get(l, True)
-            
-            shell = parse_shell(block, current_atom.symbol, current_atom.center_bohr, is_pure)
-            current_atom.shells.append(shell)
+
+            # Center is atom-specific and set later when writing output; keep a placeholder.
+            shell = parse_shell(block, current_symbol, np.zeros(3), is_pure)
+            symbol_shells[current_symbol].append(shell)
             continue
             
         cursor += 1
+
+    # Replicate template shells to every atom of that element.
+    for atom in atoms:
+        templates = symbol_shells.get(atom.symbol, [])
+        atom.shells = [
+            ShellSpec(
+                angular_momentum=s.angular_momentum,
+                exponents=np.array(s.exponents, copy=True),
+                coefficients=np.array(s.coefficients, copy=True),
+                is_pure=s.is_pure,
+                symbol=atom.symbol,
+            )
+            for s in templates
+        ]
+
     return atoms
 
 def total_basis_functions(atoms):
@@ -292,6 +310,7 @@ if __name__ == "__main__":
     parser.add_argument("--ie", type=float, default=0.0, help="Ionization Energy (eV)")
     parser.add_argument("--lmax", type=int, default=3, help="Max Angular Momentum")
     parser.add_argument("--e-range", nargs=3, type=float, metavar=('MIN', 'MAX', 'PTS'), help="Energy range (eV): MIN MAX PTS")
+    parser.add_argument("--e-list", nargs="+", type=float, help="Explicit eKE list (eV) for relative XS mode")
     parser.add_argument("--vib-file", help="File with vibrational transitions (Energy[eV] FCF)")
     parser.add_argument("--xs-out", default="cross_section.txt", help="Output file for cross sections")
     parser.add_argument("--point-dipole", type=float, help="Dipole magnitude for Point Dipole Model")
@@ -342,8 +361,8 @@ if __name__ == "__main__":
     write_cpp_input(data, selected_indices, grid, temp_inp)
     
     if args.xs:
-        if not args.e_range:
-            print("Error: --xs requires --e-range MIN MAX PTS")
+        if not args.e_range and not args.e_list:
+            print("Error: --xs requires --e-range MIN MAX PTS or --e-list E1 E2 ...")
             sys.exit(1)
         
         # Read Vibrational Data if provided
@@ -368,9 +387,13 @@ if __name__ == "__main__":
             # user provides eKE values, convert to photon energies by adding IE.
 
             # Construct Photon Energy List
-            user_e_min, user_e_max, user_n_pts = args.e_range
-            pts = int(user_n_pts)
-            e_ph_list = np.linspace(user_e_min + args.ie, user_e_max + args.ie, pts)
+            if args.e_list:
+                e_ph_list = np.array(args.e_list, dtype=float) + args.ie
+                pts = len(e_ph_list)
+            else:
+                user_e_min, user_e_max, user_n_pts = args.e_range
+                pts = int(user_n_pts)
+                e_ph_list = np.linspace(user_e_min + args.ie, user_e_max + args.ie, pts)
             
             with open(temp_inp, "a") as f:
                 # Format: IE LMAX N_PTS
