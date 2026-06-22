@@ -300,7 +300,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--grid-step", type=float, default=0.2, help="Grid step size (Bohr)")
     parser.add_argument("--padding", type=float, default=20.0, help="Padding around molecule (Bohr)")
-    parser.add_argument("--cpp-bin", default="./dyson_gen", help="Path to compiled C++ binary")
+    parser.add_argument("--cpp-bin", default="./dyson_gen_safe", help="Path to compiled C++ binary")
     parser.add_argument("--output", default="dyson_grid.bin", help="Output binary file")
     parser.add_argument("--gen-only", action="store_true", help="Only generate the C++ input file, do not run the binary.")
     parser.add_argument("--input-out", default="cpp_input.dat", help="Name of the generated C++ input file (default: cpp_input.dat)")
@@ -310,6 +310,7 @@ if __name__ == "__main__":
     parser.add_argument("--ie", type=float, default=0.0, help="Ionization Energy (eV)")
     parser.add_argument("--lmax", type=int, default=3, help="Max Angular Momentum")
     parser.add_argument("--e-range", nargs=3, type=float, metavar=('MIN', 'MAX', 'PTS'), help="Energy range (eV): MIN MAX PTS")
+    parser.add_argument("--energies", nargs="+", type=float, help="Explicit eKE list (eV) to calculate")
     parser.add_argument("--vib-file", help="File with vibrational transitions (Energy[eV] FCF)")
     parser.add_argument("--xs-out", default="cross_section.txt", help="Output file for cross sections")
     parser.add_argument("--point-dipole", type=float, help="Dipole magnitude for Point Dipole Model")
@@ -360,8 +361,8 @@ if __name__ == "__main__":
     write_cpp_input(data, selected_indices, grid, temp_inp)
     
     if args.xs:
-        if not args.e_range:
-            print("Error: --xs requires --e-range MIN MAX PTS")
+        if not args.e_range and not args.energies:
+            print("Error: --xs requires --e-range MIN MAX PTS or --energies E1 E2 ...")
             sys.exit(1)
         
         # Read Vibrational Data if provided
@@ -379,20 +380,18 @@ if __name__ == "__main__":
                 print(f"Error reading vib file: {e}")
                 sys.exit(1)
             print(f"Found {len(vib_states)} vibrational states.")
-            # Use the first state as the base IE for C++ calculation to generate the curve
             
-            # Relative XS Mode
-            # Keep energy semantics consistent with standard mode:
-            # user provides eKE values, convert to photon energies by adding IE.
-
             # Construct Photon Energy List
-            user_e_min, user_e_max, user_n_pts = args.e_range
-            pts = int(user_n_pts)
-            e_ph_list = np.linspace(user_e_min + args.ie, user_e_max + args.ie, pts)
+            if args.energies:
+                e_ph_list = np.array(args.energies, dtype=float) + args.ie
+                pts = len(e_ph_list)
+            else:
+                user_e_min, user_e_max, user_n_pts = args.e_range
+                pts = int(user_n_pts)
+                e_ph_list = np.linspace(user_e_min + args.ie, user_e_max + args.ie, pts)
             
             with open(temp_inp, "a") as f:
                 # Format: IE LMAX N_PTS
-                
                 f.write(f"\n{args.ie} {args.lmax} {pts}\n")
                 
                 # Write Energies
@@ -411,12 +410,15 @@ if __name__ == "__main__":
             if args.ie <= 0:
                 print("Warning: IE is 0 or negative. Ensure this is correct.")
             
-            # Construct Energy List (Linspace from range)
-            
-            min_e = args.e_range[0] + args.ie
-            max_e = args.e_range[1] + args.ie
-            pts = int(args.e_range[2])
-            e_list = np.linspace(min_e, max_e, pts)
+            # Construct Energy List
+            if args.energies:
+                e_list = np.array(args.energies, dtype=float) + args.ie
+                pts = len(e_list)
+            else:
+                min_e = args.e_range[0] + args.ie
+                max_e = args.e_range[1] + args.ie
+                pts = int(args.e_range[2])
+                e_list = np.linspace(min_e, max_e, pts)
             
             with open(temp_inp, "a") as f:
                 f.write(f"\n{args.ie} {args.lmax} {pts}\n")
@@ -440,8 +442,10 @@ if __name__ == "__main__":
         cmd.extend([str(d) for d in args.point_dipole_list])
 
     # Pass xs-out if provided
-    if args.xs and args.xs_out:
-        cmd.extend(["--xs-out", args.xs_out])
+    if args.xs:
+        cmd.append("--run-xs")
+        if args.xs_out:
+            cmd.extend(["--xs-out", args.xs_out])
         
     if args.dipole_length:
         cmd.extend(["--dipole-length", str(args.dipole_length)])

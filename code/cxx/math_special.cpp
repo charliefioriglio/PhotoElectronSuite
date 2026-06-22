@@ -126,34 +126,63 @@ namespace MathSpecial {
     }
 
     std::complex<double> SphericalBesselJComplex(std::complex<double> nu, double x) {
-        // j_nu(x) = sqrt(pi/(2x)) * J_{nu+0.5}(x)
-        std::complex<double> nu_cyl = nu + 0.5;
-        
-        std::complex<double> sum(0.0, 0.0);
-        std::complex<double> z_2 = x / 2.0;
-        
-        double tol = 1e-15;
-        
-        // Compute series
-        std::complex<double> x_2_pow_nu = std::pow(z_2, nu_cyl);
-        std::complex<double> factorial_k = 1.0; // Starts as 0! = 1
-        
-        for (int k = 0; k < 150; ++k) { 
-            std::complex<double> gamma_val = ComplexGamma(nu_cyl + (double)k + 1.0);
-            std::complex<double> denom = factorial_k * gamma_val;
-            
-            // term = (-1)^k / (k! Gamma) * (x/2)^(2k)
-            std::complex<double> current_term = (k % 2 == 0 ? 1.0 : -1.0) / denom * std::pow(z_2, 2*k);
-             
-            sum += current_term;
-             
-            if (std::abs(current_term) < tol * std::abs(sum) && k > 5) break; 
-
-            factorial_k *= (k + 1.0);
+        if (x < 1e-10) {
+            return (std::abs(nu) < 1e-10) ? 1.0 : 0.0;
         }
-        
-        std::complex<double> J_nu = x_2_pow_nu * sum;
-        return std::sqrt(M_PI / (2.0 * x)) * J_nu;
+        if (x > 30.0) {
+            std::complex<double> phase = x - (nu * M_PI / 2.0);
+            return std::sin(phase) / x;
+        }
+        std::complex<double> nu_cyl = nu + 0.5;
+        std::complex<double> gamma_nu_cyl_plus_1 = ComplexGamma(nu_cyl + 1.0);
+        return SphericalBesselJComplex(nu, x, gamma_nu_cyl_plus_1);
+    }
+
+    std::complex<double> SphericalBesselJComplex(std::complex<double> nu, double x, std::complex<double> gamma_nu_cyl_plus_1) {
+        if (x < 1e-10) {
+            return (std::abs(nu) < 1e-10) ? 1.0 : 0.0;
+        }
+        if (x > 30.0) {
+            std::complex<double> phase = x - (nu * M_PI / 2.0);
+            return std::sin(phase) / x;
+        }
+
+        std::complex<double> nu_cyl = nu + 0.5;
+        double z_2 = x / 2.0;
+        double z_2_sq = z_2 * z_2;
+        double tol = 1e-15;
+
+        bool nu_is_real = (std::abs(nu_cyl.imag()) < 1e-12);
+        if (nu_is_real) {
+            double nu_real = nu_cyl.real();
+            double term_real = 1.0 / gamma_nu_cyl_plus_1.real();
+            double sum_real = term_real;
+            for (int k = 1; k < 150; ++k) {
+                double factor = (double)k * (nu_real + (double)k);
+                term_real *= -z_2_sq / factor;
+                sum_real += term_real;
+                if (std::abs(term_real) < tol * std::abs(sum_real) && k > 5) break;
+            }
+            double z_2_pow_nu = std::pow(z_2, nu_real);
+            double J_nu = z_2_pow_nu * sum_real;
+            return std::sqrt(M_PI / (2.0 * x)) * J_nu;
+        } else {
+            std::complex<double> term = 1.0 / gamma_nu_cyl_plus_1;
+            std::complex<double> sum = term;
+            for (int k = 1; k < 150; ++k) {
+                std::complex<double> factor = (double)k * (nu_cyl + (double)k);
+                term = (term * std::conj(factor)) * (-z_2_sq / std::norm(factor));
+                sum += term;
+                if (std::abs(term) < tol * std::abs(sum) && k > 5) break;
+            }
+            double alpha = nu_cyl.real();
+            double beta = nu_cyl.imag();
+            double ln_z_2 = std::log(z_2);
+            double arg = beta * ln_z_2;
+            std::complex<double> z_2_pow_nu = std::pow(z_2, alpha) * std::complex<double>(std::cos(arg), std::sin(arg));
+            std::complex<double> J_nu = z_2_pow_nu * sum;
+            return std::sqrt(M_PI / (2.0 * x)) * J_nu;
+        }
     }
 
     // Adapted from reference sph.C
@@ -168,10 +197,18 @@ namespace MathSpecial {
         // 1. P_m^m
         double sin_theta = std::sin(theta);
         double cur = 1.0;
-        // (2m-1)!!
-        for (int i = 1; i <= abs_m; i++) cur *= (2*i - 1);
-        if (abs_m % 2 != 0) cur = -cur;
-        cur *= std::pow(sin_theta, abs_m);
+        
+        if (abs_m == 1) {
+            cur = -sin_theta;
+        } else if (abs_m == 2) {
+            cur = 3.0 * sin_theta * sin_theta;
+        } else if (abs_m == 3) {
+            cur = -15.0 * sin_theta * sin_theta * sin_theta;
+        } else if (abs_m > 3) {
+            for (int i = 1; i <= abs_m; i++) cur *= (2*i - 1);
+            if (abs_m % 2 != 0) cur = -cur;
+            cur *= std::pow(sin_theta, abs_m);
+        }
         
         if (l == abs_m) {
             P_lm = cur;
@@ -196,19 +233,31 @@ namespace MathSpecial {
         }
         
         // Normalization
-        double num = 1.0;
-        double den = 1.0;
-        for (int k = 1; k <= (l - abs_m); k++) num *= k;
-        for (int k = 1; k <= (l + abs_m); k++) den *= k;
+        static const double norm_table[4][4] = {
+            {0.28209479177387814, 0, 0, 0},                                      // l=0
+            {0.4886025119029199, 0.34549414940282035, 0, 0},                     // l=1
+            {0.6307831305050401, 0.25751247738580665, 0.12875623869290333, 0},    // l=2
+            {0.7463526651877685, 0.2230158869152206, 0.07052341258661601, 0.028790757088921864} // l=3
+        };
         
-        double norm = std::sqrt( ((2.0*l + 1.0) / (4.0 * M_PI)) * (num / den) );
+        double norm;
+        if (l <= 3 && abs_m <= l) {
+            norm = norm_table[l][abs_m];
+        } else {
+            double num = 1.0;
+            double den = 1.0;
+            for (int k = 1; k <= (l - abs_m); k++) num *= k;
+            for (int k = 1; k <= (l + abs_m); k++) den *= k;
+            norm = std::sqrt( ((2.0*l + 1.0) / (4.0 * M_PI)) * (num / den) );
+        }
+        
         double res = norm * P_lm;
         
-        std::complex<double> phase = std::exp(std::complex<double>(0, m * phi));
+        double m_phi = m * phi;
+        std::complex<double> phase(std::cos(m_phi), std::sin(m_phi));
         
         // Handle negative m: Y_{l,-m} = (-1)^m Y_{l,m}^*
         if (m < 0) {
-            // (-1)^m for negative m is (-1)^(-|m|) = (-1)^|m|
             if (abs_m % 2 != 0) res = -res;
         }
 

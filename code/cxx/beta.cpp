@@ -12,6 +12,50 @@
 #include <complex>
 #include <iostream>
 
+namespace {
+    double GetP_lm(int l, int abs_m, double u, double s) {
+        if (l == 0) return 1.0;
+        if (l == 1) {
+            if (abs_m == 0) return u;
+            if (abs_m == 1) return -s;
+        }
+        if (l == 2) {
+            if (abs_m == 0) return 0.5 * (3.0 * u * u - 1.0);
+            if (abs_m == 1) return -3.0 * u * s;
+            if (abs_m == 2) return 3.0 * s * s;
+        }
+        if (l == 3) {
+            if (abs_m == 0) return 0.5 * u * (5.0 * u * u - 3.0);
+            if (abs_m == 1) return -1.5 * s * (5.0 * u * u - 1.0);
+            if (abs_m == 2) return 15.0 * u * s * s;
+            if (abs_m == 3) return -15.0 * s * s * s;
+        }
+        return 0.0;
+    }
+
+    std::complex<double> GetYlmFastConj(int l, int m, double u, double s, const std::complex<double>* phase_m, double theta, double phi) {
+        int abs_m = std::abs(m);
+        if (abs_m > l) return 0.0;
+        if (l > 3) {
+            return std::conj(MathSpecial::SphericalHarmonicY(l, m, theta, phi));
+        }
+        
+        static const double norm_table[4][4] = {
+            {0.28209479177387814, 0, 0, 0},                                      // l=0
+            {0.4886025119029199, 0.34549414940282035, 0, 0},                     // l=1
+            {0.6307831305050401, 0.25751247738580665, 0.12875623869290333, 0},    // l=2
+            {0.7463526651877685, 0.2230158869152206, 0.07052341258661601, 0.028790757088921864} // l=3
+        };
+        
+        double p_lm = GetP_lm(l, abs_m, u, s);
+        double res = norm_table[l][abs_m] * p_lm;
+        if (m < 0 && (abs_m % 2 != 0)) {
+            res = -res;
+        }
+        return res * phase_m[-m + 3];
+    }
+}
+
 std::complex<double> BetaCalculator::ComputeNumericalMatrixElement(
     const std::vector<double>& dyson_vals,
     const UniformGrid& grid,
@@ -1242,6 +1286,9 @@ static double ComputeS_ll(int l, int abs_m) {
 struct PhysDipoleEigen {
     std::vector<double> eigvals_pd;       // Point-dipole-convention eigenvalues (Alm = -lambda)
     std::vector<std::complex<double>> L_eff; // Effective angular momentum (complex for supercritical)
+    std::vector<std::complex<double>> nu;    // Physical dipole radial index nu
+    std::vector<std::complex<double>> gamma_L_eff; // Precomputed gamma value for Cylindrical order L_eff + 0.5
+    std::vector<std::complex<double>> gamma_nu;    // Precomputed gamma value for Cylindrical order nu + 0.5
     std::vector<std::vector<double>> eigvecs_ylm; // Eigenvectors converted to Y_lm basis [basis_idx][mode]
     std::vector<int> l_vals;              // l values for basis functions
 };
@@ -1280,13 +1327,18 @@ static std::vector<std::vector<std::complex<double>>> ComputePhysicalDipoleAnaly
         int n_basis = (int)l_vals.size();
         pe.eigvals_pd.resize(n_modes);
         pe.L_eff.resize(n_modes);
+        pe.nu.resize(n_modes);
+        pe.gamma_L_eff.resize(n_modes);
+        pe.gamma_nu.resize(n_modes);
         pe.eigvecs_ylm = eigvecs; // Copy, then convert in-place
 
         int abs_m = std::abs(lam);
+        double c = k * dipole_length;
 
-        // Convert eigenvalues: physical dipole lambda → point-dipole Alm = -lambda
-        // Compute L_eff = 0.5*(-1 + sqrt(1 + 4*Alm))
-        // For supercritical modes (disc < 0), L_eff is complex.
+        // Solve angular eigensystem at E=0 to get c=0 eigenvalues (point dipole limit)
+        auto [eigvals_c0, eigvecs_c0, l_vals_c0] = PhysicalDipoleAngular::Solve(
+            lam, l_max, 0.0, dipole_length, D_phys);
+
         for (int n = 0; n < n_modes; ++n) {
             pe.eigvals_pd[n] = -eigvals[n]; // Alm
             double disc = 1.0 + 4.0 * pe.eigvals_pd[n];
@@ -1296,6 +1348,11 @@ static std::vector<std::vector<std::complex<double>>> ComputePhysicalDipoleAnaly
                 // Supercritical: L_eff = -0.5 + i*sqrt(|disc|)/2
                 pe.L_eff[n] = std::complex<double>(-0.5, 0.5 * std::sqrt(-disc));
             }
+            
+            // Calculate actual physical dipole radial index nu
+            pe.nu[n] = PhysicalDipoleRadial::SolveNu(c, abs_m, pe.eigvals_pd[n], -eigvals_c0[n]);
+            pe.gamma_L_eff[n] = MathSpecial::ComplexGamma(pe.L_eff[n] + 1.5);
+            pe.gamma_nu[n] = MathSpecial::ComplexGamma(pe.nu[n] + 1.5);
         }
 
         // Convert eigenvectors from P_l^|m| basis to Y_lm basis:
@@ -1353,17 +1410,31 @@ static std::vector<std::vector<std::complex<double>>> ComputePhysicalDipoleAnaly
                     double r = std::sqrt(x * x + y * y + z * z);
                     if (r < 1e-10) continue;
 
-                    double theta = std::acos(z / r);
-                    double phi = std::atan2(y, x);
+                    double rho = std::sqrt(x * x + y * y);
+                    double u = z / r;
+                    double s = rho / r;
+
+                    std::complex<double> e_phi = (rho < 1e-10) ? std::complex<double>(1.0, 0.0) : std::complex<double>(x / rho, y / rho);
+                    std::complex<double> e_2phi = e_phi * e_phi;
+                    std::complex<double> e_3phi = e_2phi * e_phi;
+
+                    std::complex<double> phase_m[7]; // index = m + 3
+                    phase_m[0] = std::conj(e_3phi); // m = 3
+                    phase_m[1] = std::conj(e_2phi); // m = 2
+                    phase_m[2] = std::conj(e_phi);  // m = 1
+                    phase_m[3] = 1.0;               // m = 0
+                    phase_m[4] = e_phi;             // m = -1
+                    phase_m[5] = e_2phi;            // m = -2
+                    phase_m[6] = e_3phi;            // m = -3
 
                     // Spherical dipole components r * Y_1^mu*(r_hat)
-                    std::complex<double> Y1_m1 = MathSpecial::SphericalHarmonicY(1, -1, theta, phi);
-                    std::complex<double> Y1_0  = MathSpecial::SphericalHarmonicY(1, 0,  theta, phi);
-                    std::complex<double> Y1_1  = MathSpecial::SphericalHarmonicY(1, 1,  theta, phi);
                     std::complex<double> dip[3];
-                    dip[0] = r * std::conj(Y1_m1);
-                    dip[1] = r * std::conj(Y1_0);
-                    dip[2] = r * std::conj(Y1_1);
+                    dip[0] = 0.34549414940282035 * std::complex<double>(x, y);
+                    dip[1] = 0.4886025119029199 * z;
+                    dip[2] = -0.34549414940282035 * std::complex<double>(x, -y);
+
+                    double theta = std::acos(u);
+                    double phi = std::atan2(y, x);
 
                     for (int lam = -l_max; lam <= l_max; ++lam) {
                         const auto& pe = eigen_sys[lam + l_max];
@@ -1372,13 +1443,22 @@ static std::vector<std::vector<std::complex<double>>> ComputePhysicalDipoleAnaly
                         // Precompute Y_{l,lam}*(r_hat) for all basis functions
                         Y_vals.resize(pe.l_vals.size());
                         for (size_t i = 0; i < pe.l_vals.size(); ++i) {
-                            Y_vals[i] = std::conj(MathSpecial::SphericalHarmonicY(
-                                pe.l_vals[i], lam, theta, phi));
+                            Y_vals[i] = GetYlmFastConj(pe.l_vals[i], lam, u, s, phase_m, theta, phi);
                         }
 
                         for (int N = 0; N < n_modes; ++N) {
-                            // Radial: j_{L_eff}(kr) — complex-order for supercritical
-                            std::complex<double> radial_c = MathSpecial::SphericalBesselJComplex(pe.L_eff[N], k * r);
+                            // Radial: j_{nu}(kr) * i^nu — complex-order for supercritical
+                            std::complex<double> phase_nu = std::exp(std::complex<double>(0.0, 1.0) * (M_PI * 0.5 * pe.nu[N]));
+                            std::complex<double> radial_c = MathSpecial::SphericalBesselJComplex(pe.nu[N], k * r, pe.gamma_nu[N]) * phase_nu;
+                            
+                            // Asymptotic normalization for approximate radial wave
+                            double Y_im = M_PI * 0.5 * pe.nu[N].imag();
+                            double A_approx = std::exp(-Y_im) * std::cosh(Y_im);
+                            if (A_approx < 1e-15) A_approx = 1e-15;
+                            radial_c /= A_approx;
+                            
+                            // Energy normalization: sqrt(2*k/pi)
+                            radial_c *= std::sqrt(2.0 * k / M_PI);
 
                             // Angular: Omega_N*(r_hat) = sum_l d_l^N * Y_{l,lam}*(r_hat)
                             std::complex<double> omega_r = 0.0;
@@ -1427,14 +1507,10 @@ static std::vector<std::vector<std::complex<double>>> ComputePhysicalDipoleAnaly
             if (l_idx_in == -1) continue;
 
             for (int N = 0; N < n_modes; ++N) {
-                // Phase: i^{L_eff} (complex L_eff handled naturally)
-                std::complex<double> phase = std::exp(
-                    std::complex<double>(0.0, 1.0) * (M_PI * 0.5 * pe.L_eff[N]));
-
                 // Y_lm coefficient of mode N at l_in (already converted)
                 double d_lin = pe.eigvecs_ylm[l_idx_in][N];
 
-                std::complex<double> weight = d_lin * phase;
+                std::complex<double> weight = d_lin;
 
                 for (int mu = 0; mu < 3; ++mu) {
                     moments[idx][mu] += weight * overlaps[m + l_max][N][mu];

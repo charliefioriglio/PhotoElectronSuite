@@ -32,13 +32,21 @@ double Dyson::evaluate(double x, double y, double z) const {
 }
 
 void Dyson::renormalize(double xmin, double xmax, double ymin, double ymax, double zmin, double zmax, double step) {
-    double norm_sq = 0.0;
     double dV = step * step * step;
     
-    for (double x = xmin; x <= xmax; x += step) {
-        for (double y = ymin; y <= ymax; y += step) {
-            for (double z = zmin; z <= zmax; z += step) {
-                double v = evaluate(x, y, z); // Uses current normalization_factor
+    int nx = std::round((xmax - xmin) / step) + 1;
+    int ny = std::round((ymax - ymin) / step) + 1;
+    int nz = std::round((zmax - zmin) / step) + 1;
+    double norm_sq = 0.0;
+    
+    #pragma omp parallel for reduction(+:norm_sq) collapse(3)
+    for (int ix = 0; ix < nx; ++ix) {
+        for (int iy = 0; iy < ny; ++iy) {
+            for (int iz = 0; iz < nz; ++iz) {
+                double x = xmin + ix * step;
+                double y = ymin + iy * step;
+                double z = zmin + iz * step;
+                double v = evaluate(x, y, z);
                 norm_sq += v * v * dV;
             }
         }
@@ -53,13 +61,21 @@ void Dyson::renormalize(double xmin, double xmax, double ymin, double ymax, doub
 }
 
 Dyson::Vector3 Dyson::get_centroid(double xmin, double xmax, double ymin, double ymax, double zmin, double zmax, double step) const {
+    double dV = step * step * step;
+    
+    int nx = std::round((xmax - xmin) / step) + 1;
+    int ny = std::round((ymax - ymin) / step) + 1;
+    int nz = std::round((zmax - zmin) / step) + 1;
     double norm_sq = 0.0;
     double X = 0.0, Y = 0.0, Z = 0.0;
-    double dV = step * step * step;
 
-    for (double x = xmin; x <= xmax; x += step) {
-        for (double y = ymin; y <= ymax; y += step) {
-            for (double z = zmin; z <= zmax; z += step) {
+    #pragma omp parallel for reduction(+:norm_sq, X, Y, Z) collapse(3)
+    for (int ix = 0; ix < nx; ++ix) {
+        for (int iy = 0; iy < ny; ++iy) {
+            for (int iz = 0; iz < nz; ++iz) {
+                double x = xmin + ix * step;
+                double y = ymin + iy * step;
+                double z = zmin + iz * step;
                 double val = evaluate(x, y, z);
                 double p2 = val * val;
                 norm_sq += p2 * dV;

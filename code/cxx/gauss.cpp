@@ -22,9 +22,24 @@ double CartesianPrimitive::evaluate(double x, double y, double z, double cx, dou
     double r2 = dx*dx + dy*dy + dz*dz;
 
     double val = std::exp(-alpha * r2);
-    if (lx > 0) val *= std::pow(dx, lx);
-    if (ly > 0) val *= std::pow(dy, ly);
-    if (lz > 0) val *= std::pow(dz, lz);
+    if (lx > 0) {
+        if (lx == 1) val *= dx;
+        else if (lx == 2) val *= dx * dx;
+        else if (lx == 3) val *= dx * dx * dx;
+        else val *= std::pow(dx, lx);
+    }
+    if (ly > 0) {
+        if (ly == 1) val *= dy;
+        else if (ly == 2) val *= dy * dy;
+        else if (ly == 3) val *= dy * dy * dy;
+        else val *= std::pow(dy, ly);
+    }
+    if (lz > 0) {
+        if (lz == 1) val *= dz;
+        else if (lz == 2) val *= dz * dz;
+        else if (lz == 3) val *= dz * dz * dz;
+        else val *= std::pow(dz, lz);
+    }
 
     return normalization_constant * val;
 }

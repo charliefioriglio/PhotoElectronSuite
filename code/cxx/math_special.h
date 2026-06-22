@@ -15,8 +15,12 @@ namespace MathSpecial {
     // Generic Spherical Bessel j_nu(x) for non-integer nu
     double SphericalBesselJGeneric(double nu, double x);
 
+    // Lanczos approximation for Gamma(z)
+    std::complex<double> ComplexGamma(std::complex<double> z);
+
     // Spherical Bessel j_nu(x) for complex nu
     std::complex<double> SphericalBesselJComplex(std::complex<double> nu, double x);
+    std::complex<double> SphericalBesselJComplex(std::complex<double> nu, double x, std::complex<double> gamma_nu_cyl_plus_1);
 
     // Spherical Harmonic Y_lm(theta, phi)
     // Returns complex value Y_lm

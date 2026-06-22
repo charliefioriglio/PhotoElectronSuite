@@ -3,6 +3,13 @@ import argparse
 import subprocess
 import os
 import sys
+import tempfile
+import json
+import numpy as np
+
+# Add local directories to sys.path
+sys.path.append(os.path.join(os.getcwd(), "code/python"))
+from dyson_io import load_qchem
 
 def run_command(cmd, cwd=None):
     """Executes a shell command and checks for errors."""
@@ -36,14 +43,18 @@ def main():
     # Global settings
     project_root = os.getcwd() 
     # specific paths to scripts/executables
-    dyson_io_script = os.path.join(project_root, "code/python/dyson_io.py")
-    beta_gen_exe = os.path.join(project_root, "beta_gen")
-    visualize_script = os.path.join(project_root, "code/python/visualize.py")
-    beta_plot_script = os.path.join(project_root, "code/python/plot_beta.py")
+    dyson_io_script = os.path.join(project_root, "code_safe/python/dyson_io.py")
+    beta_gen_exe = os.path.join(project_root, "beta_gen_safe")
+    visualize_script = os.path.join(project_root, "code_safe/python/visualize.py")
+    beta_plot_script = os.path.join(project_root, "code_safe/python/plot_beta.py")
     
     # 2. Dyson Generation Step
     dyson_cfg = config.get("dyson", {})
     calc_cfg = config.get("calculation", {})
+    cpp_input_file = calc_cfg.get("cpp_input_file", "cpp_input.dat")
+    cpp_input_dir = os.path.dirname(cpp_input_file)
+    if cpp_input_dir:
+        os.makedirs(cpp_input_dir, exist_ok=True)
     
     # Check if calculation requires dyson generation args implicitly
     do_calc = calc_cfg.get("do_calculation", False)
@@ -52,11 +63,13 @@ def main():
     if dyson_cfg.get("do_generation", True):
         print("\n=== Dyson Orbital Generation ===")
         
-        cmd = ["python3", dyson_io_script, qchem_out]
+        # Use the same interpreter as this process so env/package selection is consistent.
+        cmd = [sys.executable, dyson_io_script, qchem_out]
         
         # Output Binary
         bin_out = dyson_cfg.get("output_bin", "dyson.bin")
         cmd.extend(["--output", bin_out])
+        cmd.extend(["--input-out", cpp_input_file])
         
         # Indices
         indices = dyson_cfg.get("indices", []) # Expect list [0] or [2, 3]
@@ -121,17 +134,11 @@ def main():
                      a = calc_cfg.get("dipole_length", 0.0)
                      cmd.extend(["--dipole-length", str(a)])
             
-            # e-Range logic for dyson_io (writes energy grid to input file)
+            # Pass explicit energies list to dyson_io
             energies = calc_cfg.get("energies", [])
             if energies:
-                # dyson_io accepts --e-range MIN MAX PTS
-                if len(energies) > 0:
-                    min_e = min(energies)
-                    max_e = max(energies)
-                    # Force at least 2 points if single energy
-                    if len(energies) == 1: max_e += 0.1
-                    
-                    cmd.extend(["--e-range", str(min_e), str(max_e), str(len(energies))])
+                cmd.append("--energies")
+                cmd.extend([str(e) for e in energies])
             
             if skip_beta:
                  out_csv = calc_cfg.get("output_csv")
@@ -147,9 +154,9 @@ def main():
     if do_calc and not skip_beta:
         print("\n=== Beta/Cross Section Calculation ===")
         
-        # Check for cpp_input.dat
-        if not os.path.exists("cpp_input.dat"):
-            print("Error: 'cpp_input.dat' not found. Ensure Dyson generation step ran successfully.")
+        # Check for generated C++ input file
+        if not os.path.exists(cpp_input_file):
+            print(f"Error: '{cpp_input_file}' not found. Ensure Dyson generation step ran successfully.")
             sys.exit(1)
         
         # Model (needed for beta_gen flags regardless of generation step)
@@ -191,7 +198,7 @@ def main():
         
         for D in dipole_list:
             # Command Structure: exe input output [flags]
-            current_cmd = [beta_gen_exe, "cpp_input.dat"]
+            current_cmd = [beta_gen_exe, cpp_input_file]
             
             # Output Filename handling
             if len(dipole_list) > 1:
@@ -226,7 +233,7 @@ def main():
              print(f"Error: Binary file '{bin_file}' not found.")
              sys.exit(1)
              
-        vis_cmd = ["python3", visualize_script, bin_file]
+        vis_cmd = [sys.executable, visualize_script, bin_file]
         
         iso = vis_cfg.get("isovalue", 0.02)
         vis_cmd.extend(["--isovalue", str(iso)])
@@ -244,7 +251,37 @@ def main():
         else:
              print("Launching visualization window...")
         
-        run_command(vis_cmd)
+        # Add atoms information to the visualization command
+        try:
+            data = load_qchem(qchem_out)
+            atoms = data.atoms
+            # Center the molecule same as dyson_io does
+            coords = np.array([a.center_bohr for a in atoms])
+            centroid = np.mean(coords, axis=0)
+            atoms_list = []
+            for a in atoms:
+                atoms_list.append({
+                    "symbol": a.symbol,
+                    "x": float(a.center_bohr[0] - centroid[0]),
+                    "y": float(a.center_bohr[1] - centroid[1]),
+                    "z": float(a.center_bohr[2] - centroid[2])
+                })
+            
+            # Use a temporary file to pass the atoms data to avoid shell argument length limits
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tf:
+                json.dump(atoms_list, tf)
+                temp_atoms_file = tf.name
+            
+            vis_cmd.extend(["--atoms", temp_atoms_file])
+            
+            run_command(vis_cmd)
+            
+            # Clean up temp file
+            if os.path.exists(temp_atoms_file):
+                os.remove(temp_atoms_file)
+        except Exception as e:
+            print(f"Warning: Failed to extract atom labels for visualization: {e}")
+            run_command(vis_cmd)
 
     # 5. Beta Plot Step
     beta_plot_cfg = config.get("beta_plot", {})
@@ -261,7 +298,7 @@ def main():
             print(f"Error: Beta CSV file '{csv_file}' not found.")
             sys.exit(1)
         
-        plot_cmd = ["python3", beta_plot_script, csv_file]
+        plot_cmd = [sys.executable, beta_plot_script, csv_file]
         
         # Output image
         output_image = beta_plot_cfg.get("output_image", "beta_plot.png")

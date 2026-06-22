@@ -118,18 +118,19 @@ int main(int argc, char** argv) {
     
     // Evaluate grid (Primary/Left orbital)
     UniformGrid grid(x0, x1, y0, y1, z0, z1, step);
-    std::vector<double> data;
-    data.reserve(grid.nx * grid.ny * grid.nz);
+    std::vector<double> data(grid.nx * grid.ny * grid.nz);
     
     const Dyson& primary_dyson = dysons[0];
 
+    #pragma omp parallel for collapse(3)
     for (int ix = 0; ix < grid.nx; ++ix) {
         for (int iy = 0; iy < grid.ny; ++iy) {
             for (int iz = 0; iz < grid.nz; ++iz) {
                 double x = grid.xmin + ix * grid.dx;
                 double y = grid.ymin + iy * grid.dy;
                 double z = grid.zmin + iz * grid.dz;
-                data.push_back(primary_dyson.evaluate(x, y, z));
+                int idx = ix * (grid.ny * grid.nz) + iy * grid.nz + iz;
+                data[idx] = primary_dyson.evaluate(x, y, z);
             }
         }
     }
@@ -146,6 +147,7 @@ int main(int argc, char** argv) {
     int override_lmax = -1;
     std::string args_xs_out = "";
     double args_dipole_length = 0.0;
+    bool run_xs_calculation = false;
     
     // Parse Args for Dipoles
     for(int i=3; i<argc; ++i) {
@@ -158,10 +160,10 @@ int main(int argc, char** argv) {
              explicit_list = true;
              dipoles.clear();
              while (i+1 < argc) {
-                 std::string val = argv[i+1];
-                 if (val.substr(0, 2) == "--") break;
-                 try { dipoles.push_back(std::stod(val)); } catch(...) {}
-                 i++;
+                  std::string val = argv[i+1];
+                  if (val.substr(0, 2) == "--") break;
+                  try { dipoles.push_back(std::stod(val)); } catch(...) {}
+                  i++;
              }
         }
         else if (arg == "--lmax" && i+1 < argc) {
@@ -173,11 +175,14 @@ int main(int argc, char** argv) {
         else if (arg == "--dipole-length" && i+1 < argc) {
              try { args_dipole_length = std::stod(argv[++i]); } catch(...) {}
         }
+        else if (arg == "--run-xs") {
+             run_xs_calculation = true;
+        }
     }
     
     if (dipoles.empty()) dipoles = {0.0};
 
-    if (in >> ie_ev >> input_l_max >> n_pts) {
+    if (run_xs_calculation && (in >> ie_ev >> input_l_max >> n_pts)) {
         int l_max = (override_lmax != -1) ? override_lmax : input_l_max;
         
         std::vector<double> energies(n_pts);
