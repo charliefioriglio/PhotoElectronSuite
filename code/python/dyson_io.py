@@ -300,7 +300,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--grid-step", type=float, default=0.2, help="Grid step size (Bohr)")
     parser.add_argument("--padding", type=float, default=20.0, help="Padding around molecule (Bohr)")
-    parser.add_argument("--cpp-bin", default="./dyson_gen_safe", help="Path to compiled C++ binary")
+    parser.add_argument("--cpp-bin", default="./dyson_gen", help="Path to compiled C++ binary")
     parser.add_argument("--output", default="dyson_grid.bin", help="Output binary file")
     parser.add_argument("--gen-only", action="store_true", help="Only generate the C++ input file, do not run the binary.")
     parser.add_argument("--input-out", default="cpp_input.dat", help="Name of the generated C++ input file (default: cpp_input.dat)")
