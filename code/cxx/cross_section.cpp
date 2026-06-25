@@ -615,8 +615,8 @@ std::vector<double> CrossSectionCalculator::ComputePhysicalDipoleCrossSection(
         }
     }
     
-    // D = 0.5 * Dipole Strength
-    PhysicalDipole phys(dipole_length, 0.5 * dipole_magnitude);
+    // D = Dipole Strength
+    PhysicalDipole phys(dipole_length, dipole_magnitude);
     
     // Loop Energies
     for (size_t e = 0; e < photon_energies_ev.size(); ++e) {
@@ -781,7 +781,7 @@ std::vector<std::vector<CrossSectionCalculator::DipoleMatrixElement>> CrossSecti
         }
     }
     
-    PhysicalDipole phys(dipole_length, 0.5 * dipole_magnitude);
+    PhysicalDipole phys(dipole_length, dipole_magnitude);
     
     // 3. Loop Energies
     for (size_t e = 0; e < photon_energies_ev.size(); ++e) {

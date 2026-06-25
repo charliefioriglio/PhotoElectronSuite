@@ -1310,7 +1310,7 @@ static std::vector<std::vector<std::complex<double>>> ComputePhysicalDipoleAnaly
     if (eKE_au <= 0) return moments;
 
     double k = std::sqrt(2.0 * eKE_au);
-    double D_phys = 0.5 * dipole_strength;  // Physical dipole convention: D_sph = 0.5 * D_cli
+    double D_phys = dipole_strength;  // Physical dipole convention corrected
     double dV = grid.dx * grid.dy * grid.dz;
 
     // 1. Solve physical dipole angular eigensystem for each m,

@@ -68,17 +68,6 @@ PhysicalDipoleAngular::Solve(int m, int l_max, double E, double a, double D) {
       H[i][i + 1] += f;
     }
 
-    // Off-diagonal i-1, i
-    if (i - 1 >= 0) {
-      double num = 2.0 * factorial_double(l + m - 1);
-      double den = (2.0 * l - 1.0) * factorial_double(l - m - 1);
-      double f = (-2.0 * D / (2.0 * l + 1.0)) * (l + m);
-      f *= (num / den);
-
-      H[i - 1][i] += f;
-      H[i][i - 1] += f;
-    }
-
     // Off-diagonal i+2, i
     if (i + 2 < N) {
       double num = 2.0 * factorial_double(l + m + 2);
@@ -89,18 +78,6 @@ PhysicalDipoleAngular::Solve(int m, int l_max, double E, double a, double D) {
 
       H[i + 2][i] += f;
       H[i][i + 2] += f;
-    }
-
-    // Off-diagonal i-2, i
-    if (i - 2 >= 0) {
-      double num = 2.0 * factorial_double(l + m - 2);
-      double den = (2.0 * l + 1.0) * (2.0 * l - 1.0) * (2.0 * l - 3.0) *
-                   factorial_double(l - m - 2);
-      double f = -c2 * (l + m) * (l + m - 1);
-      f *= (num / den);
-
-      H[i - 2][i] += f;
-      H[i][i - 2] += f;
     }
   }
 
@@ -621,7 +598,6 @@ Complex PhysicalDipoleRadial::SolveNu(double target_c, int m, double Alm,
   }
   return current_nu;
 }
-
 
 std::map<int, Complex> PhysicalDipoleRadial::ComputeCoefficients(Complex nu,
                                                                  double c,
